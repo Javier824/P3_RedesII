@@ -1,40 +1,41 @@
 from django.apps import AppConfig
 import sys
 import os
+import signal
 import subprocess
 from pathlib import Path
+
 
 class AppConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "app"
 
     def ready(self):
-        # Evitamos iniciar procesos al hacer migrate o makemigrations
         if any(cmd in sys.argv for cmd in ("migrate", "makemigrations")):
             return
 
-        # Evita que se lances procesos por duplicado
         if os.environ.get('RUN_MAIN') != 'true':
             return
 
-        # Rutas a los archivos externos y a la base de datos
         base = Path(__file__).resolve().parent
         actors = base.parent.parent / "actors"
         db = base.parent / "db.sqlite3"
 
-        # Arrancamos el controlador en segundo plano
-        subprocess.Popen([
-            sys.executable, 
-            str(actors / "controller.py"), 
-            "--database", 
-            str(db)
-        ])
+        # Arrancamos el controlador
+        subprocess.Popen([sys.executable, str(actors / "controller.py"), "--database", str(db)])
 
-        # Leemos la base de datos y arrancamos los dispotivios que hay en ella
         try:
             from app.models import Device
-            
+
             for device in Device.objects.all():
+                # Matar el proceso anterior si sigue vivo
+                if device.pid:
+                    try:
+                        os.kill(device.pid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                    device.pid = None
+
                 if device.device_type == "sensor":
                     cmd = [
                         sys.executable, str(actors / "dummy-sensor.py"),
@@ -68,8 +69,9 @@ class AppConfig(AppConfig):
                 else:
                     continue
 
-                # Ejecutamos el script correspondiente al dispositivo
-                subprocess.Popen(cmd)
-                
+                proc = subprocess.Popen(cmd)
+                device.pid = proc.pid
+                device.save(update_fields=['pid'])
+
         except Exception as e:
             print(f"[DJANGO] No se pudieron arrancar los actores: {e}")

@@ -1,3 +1,5 @@
+import os
+import signal
 from django.db import models
 
 
@@ -17,6 +19,9 @@ class Device(models.Model):
     host = models.CharField(max_length=100, default="localhost", blank=True, null=True)
     port = models.IntegerField(default=1883, blank=True, null=True)
 
+    # PID del subproceso del actor
+    pid = models.IntegerField(blank=True, null=True, help_text="PID del subproceso del actor")
+
     # Campo del Switch
     probability = models.FloatField(blank=True, null=True, help_text="Probabilidad de fallo (0.0 a 1.0)")
 
@@ -35,8 +40,16 @@ class Device(models.Model):
         return f"{self.name} ({self.uid}) - {self.get_device_type_display()}"
 
     def get_last_event(self):
-        # Se obtiene el último evento de un dispositivo
         return Event.objects.filter(device_uid=self.uid).order_by('-timestamp').first()
+
+    def kill_process(self):
+        if self.pid:
+            try:
+                os.kill(self.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            self.pid = None
+            self.save(update_fields=['pid'])
 
 
 class Rule(models.Model):
@@ -55,7 +68,7 @@ class Rule(models.Model):
     trigger_device = models.ForeignKey(
         Device,
         related_name="rules_triggered",
-        on_delete=models.CASCADE, # Si se elimina el dispositivo, se elimina su regla asociada
+        on_delete=models.CASCADE,
         help_text="Dispositivo que dispara la regla",
     )
     operator = models.CharField(
@@ -104,16 +117,12 @@ class Rule(models.Model):
 
 
 class Event(models.Model):
-    # Eventos guardados
-    timestamp = models.DateTimeField(auto_now_add=True) # Django asigna automáticamente la fecha y hora de creación
+    timestamp = models.DateTimeField(auto_now_add=True)
     device_uid = models.CharField(max_length=100)
-    event_type = models.CharField(
-        max_length=50
-    )
+    event_type = models.CharField(max_length=50)
     description = models.TextField()
 
     class Meta:
-        # Orden de la tabla
         ordering = ["-timestamp"]
 
     def __str__(self):
